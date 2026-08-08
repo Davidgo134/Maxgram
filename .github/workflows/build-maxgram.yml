@@ -1,0 +1,52 @@
+name: Build Maxgram APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - maxgram/ios26-liquid-glass
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install apktool
+        run: |
+          curl -fSL -o apktool.jar https://github.com/iBotPeaches/Apktool/releases/download/v2.10.0/apktool_2.10.0.jar \
+            || curl -fSL -o apktool.jar https://bitbucket.org/iBotPeaches/apktool/downloads/apktool_2.10.0.jar
+          java -jar apktool.jar --version
+
+      - name: Apply Maxgram UI patch
+        run: python3 maxgram_ios26_patch.py --tabbar --rebrand Maxgram --apply
+
+      - name: Build APK
+        run: java -jar apktool.jar b 26.25.0-1.5.2 -o maxgram-unsigned.apk --use-aapt2
+
+      - name: Generate debug keystore
+        run: keytool -genkeypair -keystore debug.jks -alias maxgram -keyalg RSA -keysize 2048 -validity 10000 -storepass android -keypass android -dname "CN=Maxgram Debug"
+
+      - name: Align and sign
+        run: |
+          BT=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
+          "$BT/zipalign" -p -f 4 maxgram-unsigned.apk maxgram-aligned.apk
+          "$BT/apksigner" sign --ks debug.jks --ks-pass pass:android --key-pass pass:android --out maxgram.apk maxgram-aligned.apk
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: maxgram-apk
+          path: maxgram.apk
