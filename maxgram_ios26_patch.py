@@ -1,30 +1,23 @@
 #!/usr/bin/env python3
 """
-Maxgram iOS26 patch tool v4 — UI-мод для apktool-дампа MAX.
+Maxgram iOS26 patch tool v5 — UI-мод для apktool-дампа MAX.
 
 Запуск из КОРНЯ репозитория (рядом с папкой 26.25.0-1.5.2):
 
-  # Чинит aapt2-link на apktool >= 2.9: генерирует определения-стабы для
-  # символов, объявленных в public.xml, но потерянных в res/**:
-  python3 maxgram_ios26_patch.py --fix-public --apply
-
-  # Floating glass таб-бар как в Telegram iOS 26:
+  python3 maxgram_ios26_patch.py --fix-public --fix-styles --apply
   python3 maxgram_ios26_patch.py --tabbar --apply
-
-  # Ребрендинг + перекраска:
   python3 maxgram_ios26_patch.py --scan-colors
   python3 maxgram_ios26_patch.py --rebrand Maxgram --recolor 0xFF7B61FF=0xFF007AFF --apply
-
-  # Сборка:
   python3 maxgram_ios26_patch.py --build --keystore my.jks --ks-pass PASS
 
-Стадия --fix-public (v4): НЕ удаляет объявления из public.xml — наоборот,
-  достраивает недостающие определения (res/values/maxgram_stubs.xml +
-  файловые стабы для anim/layout/mipmap/...). Удалять объявления нельзя:
-  styles.xml и другие ресурсы ссылаются на эти символы через @type/name.
-  Известным Material/AppCompat-цветам проставляются канонические значения,
-  остальным — нейтральные. Это мёртвые остатки библиотек, на рантайм-вид
-  OneMe-интерфейса они не влияют.
+Стадии:
+  --fix-public  достраивает определения для символов public.xml, потерянных в res/**
+                (res/values/maxgram_stubs.xml + файловые стабы).
+  --fix-styles  удаляет из res/values*/styles.xml <item> ссылки на android:attr,
+                которых нет в framework.apk, вшитом в apktool (новые атрибуты
+                API 34/35, например windowOptOutEdgeToEdgeEnforcement). Атрибуты не
+                используются OneMe-рендером, удаление безопасно.
+  --tabbar      MainScreen.smali: blur TRUE + margins 12dp + rounded clip 28dp.
 """
 import argparse
 import re
@@ -41,20 +34,16 @@ REBRAND_RE = re.compile(r'(<string\s+name="oneme_app_name">)[^<]*(</string>)')
 
 MAIN_SCREEN = 'smali/one/me/main/MainScreen.smali'
 
-# Якорь 1: blur. FALSE стоит ровно перед setBlurEnabled основного таб-бара (p2).
 BLUR_ANCHOR = re.compile(
     r'sget-object v1, Ljava/lang/Boolean;->FALSE:Ljava/lang/Boolean;'
     r'(\s*invoke-virtual \{p2, v1\}, Llqb;->setBlurEnabled\(Ljava/lang/Boolean;\)V)'
 )
 BLUR_REPL = r'sget-object v1, Ljava/lang/Boolean;->TRUE:Ljava/lang/Boolean;\1'
 
-# Якорь 2: первый addView (таб-бар p2). Вставляем margins + rounded clip перед ним.
 ADDVIEW_ANCHOR = (
     '    invoke-virtual {p1, p2, p0}, '
     'Landroid/view/ViewGroup;->addView(Landroid/view/View;Landroid/view/ViewGroup$LayoutParams;)V'
 )
-# На этом месте живы: p0=LayoutParams, p1=root, p2=бар, p3=-1, v0=-2, v1=0x50.
-# v2 и v4 мертвы — используем их. .locals 5 (v0..v4) не превышаем.
 TABBAR_INSERT = """    # --- maxgram: floating glass tab bar ---
     invoke-static {}, Lgi5;->d()Landroid/content/res/Resources;
 
@@ -186,6 +175,38 @@ def smali_files(root: Path):
     yield from root.glob('smali*/**/*.smali')
 
 
+# ---------------------------------------------------------------- fix-styles stage
+
+# Атрибуты/стили, которых нет в встроенном framework.apk apktool ≤ 2.10 (API 34/35+).
+UNKNOWN_ATTRS = [
+    'android:windowOptOutEdgeToEdgeEnforcement',
+    'android:enableOnBackInvokedCallback',
+    'android:supportsMultipleDisplays',
+]
+
+
+def stage_fix_styles(root: Path, apply: bool):
+    res = root / 'res'
+    total = 0
+    patterns = [re.compile(
+        r'[ \t]*<item[^>]*\bname="' + re.escape(attr) + r'"[^>]*>.*?</item>\s*\n?',
+        re.DOTALL) for attr in UNKNOWN_ATTRS]
+    for f in res.glob('values*/styles.xml'):
+        text = f.read_text(encoding='utf-8', errors='ignore')
+        new_text = text
+        hits = 0
+        for pat in patterns:
+            new_text, n = pat.subn('', new_text)
+            hits += n
+        if hits:
+            total += hits
+            print(f'{"PATCH" if apply else "WOULD"} styles {f}  ({hits} атрибутов удалено)')
+            if apply:
+                f.write_text(new_text, encoding='utf-8')
+    if not total:
+        print('fix-styles: ничего удалять не пришлось')
+
+
 # ---------------------------------------------------------------- fix-public stage
 
 PUBLIC_RE = re.compile(r'<public\s+type="([^"]+)"\s+name="([^"]+)"[^>]*>')
@@ -203,7 +224,6 @@ TAG_ALIAS = {
     'boolean': 'bool',
 }
 
-# Канонические значения Material/AppCompat (из исходников библиотек)
 CANON_COLORS = {
     'foreground_material_dark': '#FFFFFFFF',
     'foreground_material_light': '#FF000000',
@@ -260,7 +280,6 @@ FILE_STUBS = {
 
 
 def collect_defined(res: Path) -> set:
-    """Все (type, name), реально определённые в res/**."""
     defined = set()
     for f in res.rglob('*'):
         if f.is_dir():
@@ -276,7 +295,6 @@ def collect_defined(res: Path) -> set:
             for t, name in ITEM_DEF_RE.findall(text):
                 defined.add((t, name))
         else:
-            # файловые ресурсы: res/drawable-xhdpi/abc.png -> (drawable, abc)
             defined.add((parent.split('-')[0], f.stem))
     return defined
 
@@ -494,11 +512,11 @@ def build(root: Path, out: Path, keystore: str, ks_pass: str):
 # ---------------------------------------------------------------- main
 
 def main():
-    ap = argparse.ArgumentParser(description='Maxgram iOS26 patch tool v4')
+    ap = argparse.ArgumentParser(description='Maxgram iOS26 patch tool v5')
     ap.add_argument('--root', default='26.25.0-1.5.2')
-    ap.add_argument('--fix-public', action='store_true',
-                    help='стабы для символов public.xml без определений (aapt2 fix)')
-    ap.add_argument('--tabbar', action='store_true', help='floating glass таб-бар (MainScreen)')
+    ap.add_argument('--fix-public', action='store_true')
+    ap.add_argument('--fix-styles', action='store_true')
+    ap.add_argument('--tabbar', action='store_true')
     ap.add_argument('--rebrand', metavar='NAME')
     ap.add_argument('--scan-colors', action='store_true')
     ap.add_argument('--recolor', nargs='*', metavar='OLD=NEW')
@@ -515,6 +533,9 @@ def main():
 
     if args.fix_public:
         stage_fix_public(root, args.apply)
+
+    if args.fix_styles:
+        stage_fix_styles(root, args.apply)
 
     if args.tabbar:
         stage_tabbar(root, args.apply)
@@ -533,7 +554,7 @@ def main():
     if args.rebrand:
         rebrand(root, args.rebrand, args.apply)
 
-    if not args.apply and (args.fix_public or args.tabbar or mapping or args.rebrand):
+    if not args.apply and (args.fix_public or args.fix_styles or args.tabbar or mapping or args.rebrand):
         print('\nЭто dry-run. Добавь --apply, чтобы записать изменения.')
 
     if args.build:
