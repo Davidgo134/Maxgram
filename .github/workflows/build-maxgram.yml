@@ -34,7 +34,7 @@ jobs:
         run: python3 maxgram_ios26_patch.py --tabbar --rebrand Maxgram --apply
 
       - name: Build APK
-        run: java -jar apktool.jar b 26.25.0-1.5.2 -o maxgram-unsigned.apk --use-aapt2
+        run: java -jar apktool.jar b 26.25.0-1.5.2 -o maxgram-unsigned.apk
 
       - name: Generate debug keystore
         run: keytool -genkeypair -keystore debug.jks -alias maxgram -keyalg RSA -keysize 2048 -validity 10000 -storepass android -keypass android -dname "CN=Maxgram Debug"
