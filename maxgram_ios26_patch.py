@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-Maxgram iOS26 patch tool v3 — UI-мод для apktool-дампа MAX.
+Maxgram iOS26 patch tool v4 — UI-мод для apktool-дампа MAX.
 
 Запуск из КОРНЯ репозитория (рядом с папкой 26.25.0-1.5.2):
 
-  # НОВОЕ в v3: чистка public.xml от объявлений без определений
-  # (чинит ошибку aapt2 "no definition for declared symbol" на apktool 2.9+):
+  # Чинит aapt2-link на apktool >= 2.9: генерирует определения-стабы для
+  # символов, объявленных в public.xml, но потерянных в res/**:
   python3 maxgram_ios26_patch.py --fix-public --apply
 
   # Floating glass таб-бар как в Telegram iOS 26:
@@ -18,13 +18,13 @@ Maxgram iOS26 patch tool v3 — UI-мод для apktool-дампа MAX.
   # Сборка:
   python3 maxgram_ios26_patch.py --build --keystore my.jks --ks-pass PASS
 
-Стадии:
-  --fix-public  res/values/public.xml объявляет символы, которых нет в res/**.
-                aapt2 (единственный движок в apktool >= 2.9) падает на линковке.
-                Сканируем все определения (values + файловые ресурсы) и удаляем
-                из public.xml только «сирот» — id остальных не меняются.
-  --tabbar      MainScreen.smali: blur TRUE + margins 12dp + rounded clip 28dp
-                (через новый хелпер smali/maxgram/GlassOutline).
+Стадия --fix-public (v4): НЕ удаляет объявления из public.xml — наоборот,
+  достраивает недостающие определения (res/values/maxgram_stubs.xml +
+  файловые стабы для anim/layout/mipmap/...). Удалять объявления нельзя:
+  styles.xml и другие ресурсы ссылаются на эти символы через @type/name.
+  Известным Material/AppCompat-цветам проставляются канонические значения,
+  остальным — нейтральные. Это мёртвые остатки библиотек, на рантайм-вид
+  OneMe-интерфейса они не влияют.
 """
 import argparse
 import re
@@ -191,7 +191,6 @@ def smali_files(root: Path):
 PUBLIC_RE = re.compile(r'<public\s+type="([^"]+)"\s+name="([^"]+)"[^>]*>')
 VALUE_DEF_RE = re.compile(r'<(\w[\w-]*)\s+[^>]*\bname="([^"]+)"')
 ITEM_DEF_RE = re.compile(r'<item\s+[^>]*type="([^"]+)"[^>]*name="([^"]+)"')
-# теги, которые являются определениями ресурсов (не ссылки/комментарии)
 VALUE_TAGS = {
     'string', 'color', 'dimen', 'bool', 'boolean', 'integer', 'fraction',
     'drawable', 'style', 'array', 'plurals', 'id', 'attr', 'item',
@@ -204,6 +203,61 @@ TAG_ALIAS = {
     'boolean': 'bool',
 }
 
+# Канонические значения Material/AppCompat (из исходников библиотек)
+CANON_COLORS = {
+    'foreground_material_dark': '#FFFFFFFF',
+    'foreground_material_light': '#FF000000',
+    'background_material_dark': '#FF303030',
+    'background_material_light': '#FFFFFFFF',
+    'background_floating_material_dark': '#FF424242',
+    'background_floating_material_light': '#FFFFFFFF',
+    'bright_foreground_material_dark': '#FFFFFFFF',
+    'bright_foreground_material_light': '#FF000000',
+    'bright_foreground_disabled_material_dark': '#80FFFFFF',
+    'bright_foreground_disabled_material_light': '#80000000',
+    'bright_foreground_inverse_material_dark': '#FF000000',
+    'bright_foreground_inverse_material_light': '#FFFFFFFF',
+    'button_material_dark': '#FF5A595B',
+    'button_material_light': '#FFD6D7D7',
+    'ripple_material_dark': '#33FFFFFF',
+    'ripple_material_light': '#1F000000',
+    'highlighted_text_material_dark': '#66444444',
+    'highlighted_text_material_light': '#66444444',
+    'accent_material_dark': '#FF80CBC4',
+    'accent_material_light': '#FF009688',
+    'material_grey_50': '#FFFAFAFA',
+    'material_grey_600': '#FF757575',
+    'material_grey_800': '#FF424242',
+    'material_grey_850': '#FF303030',
+    'material_grey_900': '#FF212121',
+    'material_deep_teal_200': '#FF80CBC4',
+    'material_deep_teal_500': '#FF009688',
+    'abc_search_url_text_normal': '#FF9E9E9E',
+    'abc_search_url_text_pressed': '#FF000000',
+    'abc_search_url_text_selected': '#FF000000',
+    'call_notification_answer_color': '#FF4CAF50',
+    'call_notification_decline_color': '#FFF44336',
+    'design_dark_default_color_background': '#FF121212',
+    'androidx_core_ripple_material_light': '#1F000000',
+    'androidx_core_secondary_text_default_material_light': '#8A000000',
+}
+DEFAULT_COLOR = '#FF888888'
+
+ANDROID_NS = 'xmlns:android="http://schemas.android.com/apk/res/android"'
+FILE_STUBS = {
+    'anim': f'<set {ANDROID_NS}/>',
+    'animator': f'<set {ANDROID_NS}/>',
+    'interpolator': f'<linearInterpolator {ANDROID_NS}/>',
+    'layout': f'<FrameLayout {ANDROID_NS} android:layout_width="match_parent" '
+              f'android:layout_height="match_parent"/>',
+    'menu': f'<menu {ANDROID_NS}/>',
+    'drawable': f'<shape {ANDROID_NS} android:shape="rectangle">'
+                f'<solid android:color="#00000000"/></shape>',
+    'mipmap': f'<shape {ANDROID_NS} android:shape="rectangle">'
+              f'<solid android:color="#00000000"/></shape>',
+    'xml': '<maxgram-stub/>',
+}
+
 
 def collect_defined(res: Path) -> set:
     """Все (type, name), реально определённые в res/**."""
@@ -213,7 +267,7 @@ def collect_defined(res: Path) -> set:
             continue
         parent = f.parent.name
         if parent.startswith('values'):
-            if f.suffix != '.xml' or f.name == 'public.xml':
+            if f.suffix != '.xml' or f.name in ('public.xml', 'maxgram_stubs.xml'):
                 continue
             text = f.read_text(encoding='utf-8', errors='ignore')
             for tag, name in VALUE_DEF_RE.findall(text):
@@ -229,24 +283,84 @@ def collect_defined(res: Path) -> set:
 
 def stage_fix_public(root: Path, apply: bool):
     pub = root / 'res/values/public.xml'
+    res = root / 'res'
     if not pub.is_file():
         sys.exit(f'не найден {pub}')
-    defined = collect_defined(root / 'res')
-    kept, dropped = [], []
+    defined = collect_defined(res)
+
+    undefined = {}
     for ln in pub.read_text(encoding='utf-8', errors='ignore').splitlines():
         m = PUBLIC_RE.search(ln)
         if m and (m.group(1), m.group(2)) not in defined:
-            dropped.append(f'{m.group(1)}/{m.group(2)}')
-            continue
-        kept.append(ln)
-    print(f'{"PATCH" if apply else "WOULD"} public.xml: {len(dropped)} объявлений '
-          f'без определений (удаляем), {len(kept)} строк остаётся')
-    for d in dropped[:15]:
-        print('   -', d)
-    if len(dropped) > 15:
-        print(f'   ... и ещё {len(dropped) - 15}')
-    if apply and dropped:
-        pub.write_text('\n'.join(kept) + '\n', encoding='utf-8')
+            undefined.setdefault(m.group(1), []).append(m.group(2))
+
+    total = sum(len(v) for v in undefined.values())
+    if not total:
+        print('fix-public: все символы public.xml определены, ничего не делаем')
+        return
+    print(f'fix-public: {total} символов без определений:')
+    for t, names in sorted(undefined.items()):
+        print(f'   {t}: {len(names)}')
+
+    values_entries = []
+    file_writes = {}
+    skipped = []
+    for t, names in sorted(undefined.items()):
+        for n in names:
+            if t == 'color':
+                values_entries.append(f'    <color name="{n}">{CANON_COLORS.get(n, DEFAULT_COLOR)}</color>')
+            elif t == 'dimen':
+                values_entries.append(f'    <dimen name="{n}">0dp</dimen>')
+            elif t == 'string':
+                values_entries.append(f'    <string name="{n}"></string>')
+            elif t == 'bool':
+                values_entries.append(f'    <bool name="{n}">false</bool>')
+            elif t == 'integer':
+                values_entries.append(f'    <integer name="{n}">0</integer>')
+            elif t == 'fraction':
+                values_entries.append(f'    <fraction name="{n}">0%</fraction>')
+            elif t == 'id':
+                values_entries.append(f'    <item type="id" name="{n}"/>')
+            elif t == 'style':
+                values_entries.append(f'    <style name="{n}"/>')
+            elif t in ('array', 'string-array', 'integer-array'):
+                values_entries.append(f'    <array name="{n}"/>')
+            elif t == 'plurals':
+                values_entries.append(
+                    f'    <plurals name="{n}"><item quantity="other"></item></plurals>')
+            elif t == 'drawable':
+                values_entries.append(f'    <item type="drawable" name="{n}">#00000000</item>')
+            elif t in ('styleable', 'declare-styleable'):
+                values_entries.append(f'    <declare-styleable name="{n}"></declare-styleable>')
+            elif t == 'attr':
+                values_entries.append(f'    <attr name="{n}" format="string"/>')
+            elif t in FILE_STUBS:
+                file_writes[f'res/{t}/{n}.xml'] = (
+                    '<?xml version="1.0" encoding="utf-8"?>\n' + FILE_STUBS[t] + '\n')
+            elif t == 'raw':
+                file_writes[f'res/raw/{n}'] = ''
+            else:
+                skipped.append(f'{t}/{n}')
+
+    stub_xml = ('<?xml version="1.0" encoding="utf-8"?>\n'
+                '<!-- Maxgram: стабы для символов public.xml, потерянных при декомпиляции -->\n'
+                '<resources>\n' + '\n'.join(values_entries) + '\n</resources>\n')
+
+    print(f'{"WRITE" if apply else "WOULD"} res/values/maxgram_stubs.xml '
+          f'({len(values_entries)} определений)')
+    for rel in sorted(file_writes):
+        print(f'{"WRITE" if apply else "WOULD"} {rel}')
+    if skipped:
+        print(f'!! пропущено (нет шаблона): {len(skipped)}')
+        for s in skipped[:20]:
+            print('   -', s)
+
+    if apply:
+        (res / 'values/maxgram_stubs.xml').write_text(stub_xml, encoding='utf-8')
+        for rel, content in file_writes.items():
+            f = root / rel
+            f.parent.mkdir(parents=True, exist_ok=True)
+            f.write_text(content, encoding='utf-8')
 
 
 # ---------------------------------------------------------------- tabbar stage
@@ -380,10 +494,10 @@ def build(root: Path, out: Path, keystore: str, ks_pass: str):
 # ---------------------------------------------------------------- main
 
 def main():
-    ap = argparse.ArgumentParser(description='Maxgram iOS26 patch tool v3')
+    ap = argparse.ArgumentParser(description='Maxgram iOS26 patch tool v4')
     ap.add_argument('--root', default='26.25.0-1.5.2')
     ap.add_argument('--fix-public', action='store_true',
-                    help='удалить из public.xml объявления без определений (aapt2 fix)')
+                    help='стабы для символов public.xml без определений (aapt2 fix)')
     ap.add_argument('--tabbar', action='store_true', help='floating glass таб-бар (MainScreen)')
     ap.add_argument('--rebrand', metavar='NAME')
     ap.add_argument('--scan-colors', action='store_true')
