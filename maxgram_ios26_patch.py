@@ -1,29 +1,30 @@
 #!/usr/bin/env python3
 """
-Maxgram iOS26 patch tool v2 — UI-мод для apktool-дампа MAX.
+Maxgram iOS26 patch tool v3 — UI-мод для apktool-дампа MAX.
 
 Запуск из КОРНЯ репозитория (рядом с папкой 26.25.0-1.5.2):
 
-  # НОВОЕ: floating glass таб-бар как в Telegram iOS 26 (dry-run):
-  python3 maxgram_ios26_patch.py --tabbar
+  # НОВОЕ в v3: чистка public.xml от объявлений без определений
+  # (чинит ошибку aapt2 "no definition for declared symbol" на apktool 2.9+):
+  python3 maxgram_ios26_patch.py --fix-public --apply
 
-  # Применить:
+  # Floating glass таб-бар как в Telegram iOS 26:
   python3 maxgram_ios26_patch.py --tabbar --apply
 
-  # Ребрендинг + перекраска (как в v1):
+  # Ребрендинг + перекраска:
   python3 maxgram_ios26_patch.py --scan-colors
   python3 maxgram_ios26_patch.py --rebrand Maxgram --recolor 0xFF7B61FF=0xFF007AFF --apply
 
   # Сборка:
   python3 maxgram_ios26_patch.py --build --keystore my.jks --ks-pass PASS
 
-Что делает стадия --tabbar (smali/one/me/main/MainScreen.smali):
-  1) setBlurEnabled(FALSE) -> setBlurEnabled(TRUE) — у OneMeBottomBarView (Llqb;)
-     есть встроенный realtime-blur фона, в стоке он выключен. Это и есть «стекло».
-  2) FrameLayout.LayoutParams таб-бара: margins 12dp со всех сторон — бар
-     становится «плавающим», а не на всю ширину.
-  3) Закруглённый клип 28dp через новый хелпер smali/maxgram/GlassOutline
-     (2 новых smali-файла, ресурсы/public.xml не трогаем — сборка безопасна).
+Стадии:
+  --fix-public  res/values/public.xml объявляет символы, которых нет в res/**.
+                aapt2 (единственный движок в apktool >= 2.9) падает на линковке.
+                Сканируем все определения (values + файловые ресурсы) и удаляем
+                из public.xml только «сирот» — id остальных не меняются.
+  --tabbar      MainScreen.smali: blur TRUE + margins 12dp + rounded clip 28dp
+                (через новый хелпер smali/maxgram/GlassOutline).
 """
 import argparse
 import re
@@ -185,6 +186,69 @@ def smali_files(root: Path):
     yield from root.glob('smali*/**/*.smali')
 
 
+# ---------------------------------------------------------------- fix-public stage
+
+PUBLIC_RE = re.compile(r'<public\s+type="([^"]+)"\s+name="([^"]+)"[^>]*>')
+VALUE_DEF_RE = re.compile(r'<(\w[\w-]*)\s+[^>]*\bname="([^"]+)"')
+ITEM_DEF_RE = re.compile(r'<item\s+[^>]*type="([^"]+)"[^>]*name="([^"]+)"')
+# теги, которые являются определениями ресурсов (не ссылки/комментарии)
+VALUE_TAGS = {
+    'string', 'color', 'dimen', 'bool', 'boolean', 'integer', 'fraction',
+    'drawable', 'style', 'array', 'plurals', 'id', 'attr', 'item',
+    'string-array', 'integer-array', 'declare-styleable', 'styleable',
+}
+TAG_ALIAS = {
+    'string-array': 'array',
+    'integer-array': 'array',
+    'declare-styleable': 'styleable',
+    'boolean': 'bool',
+}
+
+
+def collect_defined(res: Path) -> set:
+    """Все (type, name), реально определённые в res/**."""
+    defined = set()
+    for f in res.rglob('*'):
+        if f.is_dir():
+            continue
+        parent = f.parent.name
+        if parent.startswith('values'):
+            if f.suffix != '.xml' or f.name == 'public.xml':
+                continue
+            text = f.read_text(encoding='utf-8', errors='ignore')
+            for tag, name in VALUE_DEF_RE.findall(text):
+                if tag in VALUE_TAGS:
+                    defined.add((TAG_ALIAS.get(tag, tag), name))
+            for t, name in ITEM_DEF_RE.findall(text):
+                defined.add((t, name))
+        else:
+            # файловые ресурсы: res/drawable-xhdpi/abc.png -> (drawable, abc)
+            defined.add((parent.split('-')[0], f.stem))
+    return defined
+
+
+def stage_fix_public(root: Path, apply: bool):
+    pub = root / 'res/values/public.xml'
+    if not pub.is_file():
+        sys.exit(f'не найден {pub}')
+    defined = collect_defined(root / 'res')
+    kept, dropped = [], []
+    for ln in pub.read_text(encoding='utf-8', errors='ignore').splitlines():
+        m = PUBLIC_RE.search(ln)
+        if m and (m.group(1), m.group(2)) not in defined:
+            dropped.append(f'{m.group(1)}/{m.group(2)}')
+            continue
+        kept.append(ln)
+    print(f'{"PATCH" if apply else "WOULD"} public.xml: {len(dropped)} объявлений '
+          f'без определений (удаляем), {len(kept)} строк остаётся')
+    for d in dropped[:15]:
+        print('   -', d)
+    if len(dropped) > 15:
+        print(f'   ... и ещё {len(dropped) - 15}')
+    if apply and dropped:
+        pub.write_text('\n'.join(kept) + '\n', encoding='utf-8')
+
+
 # ---------------------------------------------------------------- tabbar stage
 
 def stage_tabbar(root: Path, apply: bool):
@@ -300,7 +364,7 @@ def build(root: Path, out: Path, keystore: str, ks_pass: str):
     unsigned = out.with_suffix('.unsigned.apk')
     aligned = out.with_suffix('.aligned.apk')
     steps = [
-        cmd + ['b', str(root), '-o', str(unsigned), '--use-aapt2'],
+        cmd + ['b', str(root), '-o', str(unsigned)],
         ['zipalign', '-p', '4', str(unsigned), str(aligned)],
         ['apksigner', 'sign', '--ks', keystore, '--ks-pass', f'pass:{ks_pass}',
          '--out', str(out), str(aligned)],
@@ -316,8 +380,10 @@ def build(root: Path, out: Path, keystore: str, ks_pass: str):
 # ---------------------------------------------------------------- main
 
 def main():
-    ap = argparse.ArgumentParser(description='Maxgram iOS26 patch tool v2')
+    ap = argparse.ArgumentParser(description='Maxgram iOS26 patch tool v3')
     ap.add_argument('--root', default='26.25.0-1.5.2')
+    ap.add_argument('--fix-public', action='store_true',
+                    help='удалить из public.xml объявления без определений (aapt2 fix)')
     ap.add_argument('--tabbar', action='store_true', help='floating glass таб-бар (MainScreen)')
     ap.add_argument('--rebrand', metavar='NAME')
     ap.add_argument('--scan-colors', action='store_true')
@@ -332,6 +398,9 @@ def main():
     root = Path(args.root)
     if not root.is_dir():
         sys.exit(f'не найдена папка {root} — запускай из корня репозитория')
+
+    if args.fix_public:
+        stage_fix_public(root, args.apply)
 
     if args.tabbar:
         stage_tabbar(root, args.apply)
@@ -350,7 +419,7 @@ def main():
     if args.rebrand:
         rebrand(root, args.rebrand, args.apply)
 
-    if not args.apply and (args.tabbar or mapping or args.rebrand):
+    if not args.apply and (args.fix_public or args.tabbar or mapping or args.rebrand):
         print('\nЭто dry-run. Добавь --apply, чтобы записать изменения.')
 
     if args.build:

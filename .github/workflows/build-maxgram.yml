@@ -31,7 +31,7 @@ jobs:
           java -jar apktool.jar --version
 
       - name: Apply Maxgram UI patch
-        run: python3 maxgram_ios26_patch.py --tabbar --rebrand Maxgram --apply
+        run: python3 maxgram_ios26_patch.py --fix-public --tabbar --rebrand Maxgram --apply
 
       - name: Build APK
         run: java -jar apktool.jar b 26.25.0-1.5.2 -o maxgram-unsigned.apk
