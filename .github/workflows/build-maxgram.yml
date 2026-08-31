@@ -26,6 +26,16 @@ jobs:
         with:
           validate-wrappers: false
 
+      - name: Prepare CI secrets and debug keystore
+        run: |
+          touch secrets_for_ci.env
+          keytool -genkeypair \
+            -keystore Your_Key.jks \
+            -alias Your_Alias \
+            -keyalg RSA -keysize 2048 -validity 36500 \
+            -storepass Your_Password -keypass Your_Password \
+            -dname "CN=Maxgram CI, OU=Dev, O=Maxgram, L=City, ST=State, C=US"
+
       - name: Build debug APK
         run: |
           chmod +x ./gradlew
