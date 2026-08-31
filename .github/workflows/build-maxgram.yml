@@ -26,7 +26,7 @@ jobs:
         with:
           validate-wrappers: false
 
-      - name: Prepare CI secrets and debug keystore
+      - name: Prepare CI secrets, keystore and Firebase stub
         run: |
           touch secrets_for_ci.env
           keytool -genkeypair \
@@ -35,11 +35,23 @@ jobs:
             -keyalg RSA -keysize 2048 -validity 36500 \
             -storepass Your_Password -keypass Your_Password \
             -dname "CN=Maxgram CI, OU=Dev, O=Maxgram, L=City, ST=State, C=US"
+          if [ ! -f TMessagesProj/google-services.json ]; then
+            echo '{"project_info":{"project_number":"123456789012","project_id":"maxgram-ci","storage_bucket":"maxgram-ci.appspot.com"},"client":[{"client_info":{"mobilesdk_app_id":"1:123456789012:android:0123456789abcdef012345","android_client_info":{"package_name":"uz.unnarsx.cherrygram"}},"oauth_client":[],"api_key":[{"current_key":"AIzaSyDummyKeyForCiBuildOnly0000000000"}],"services":{"appinvite_service":{"other_platform_oauth_client":[]}}},{"client_info":{"mobilesdk_app_id":"1:123456789012:android:abcdef0123456789abcdef01","android_client_info":{"package_name":"uz.unnarsx.cherrygram.beta"}},"oauth_client":[],"api_key":[{"current_key":"AIzaSyDummyKeyForCiBuildOnly0000000000"}],"services":{"appinvite_service":{"other_platform_oauth_client":[]}}}],"configuration_version":"1"}' > TMessagesProj/google-services.json
+          fi
 
       - name: Build debug APK
         run: |
           chmod +x ./gradlew
-          ./gradlew assembleDebug --stacktrace
+          set -o pipefail
+          ./gradlew assembleDebug --stacktrace 2>&1 | tee gradle.log
+
+      - name: Show native build errors
+        if: failure()
+        run: |
+          echo "===== CMake errors from gradle.log ====="
+          grep -i -B2 -A25 "cmake error" gradle.log || true
+          echo "===== .cxx stderr/stdout tails ====="
+          find . -path '*/.cxx/*' \( -name '*stderr*' -o -name '*stdout*' \) -print -exec tail -n 50 {} \; || true
 
       - name: Upload APK
         if: always()
