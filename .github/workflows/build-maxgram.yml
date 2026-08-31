@@ -39,6 +39,12 @@ jobs:
             echo '{"project_info":{"project_number":"123456789012","project_id":"maxgram-ci","storage_bucket":"maxgram-ci.appspot.com"},"client":[{"client_info":{"mobilesdk_app_id":"1:123456789012:android:0123456789abcdef012345","android_client_info":{"package_name":"uz.unnarsx.cherrygram"}},"oauth_client":[],"api_key":[{"current_key":"AIzaSyDummyKeyForCiBuildOnly0000000000"}],"services":{"appinvite_service":{"other_platform_oauth_client":[]}}},{"client_info":{"mobilesdk_app_id":"1:123456789012:android:abcdef0123456789abcdef01","android_client_info":{"package_name":"uz.unnarsx.cherrygram.beta"}},"oauth_client":[],"api_key":[{"current_key":"AIzaSyDummyKeyForCiBuildOnly0000000000"}],"services":{"appinvite_service":{"other_platform_oauth_client":[]}}}],"configuration_version":"1"}' > TMessagesProj/google-services.json
           fi
 
+      - name: Fetch colorado native component
+        run: |
+          git clone --depth 1 --filter=blob:none --sparse https://github.com/Nekogram/Nekogram.git /tmp/nekogram
+          git -C /tmp/nekogram sparse-checkout set TMessagesProj/jni/colorado
+          cp -r /tmp/nekogram/TMessagesProj/jni/colorado TMessagesProj/jni/colorado
+
       - name: Build debug APK
         run: |
           chmod +x ./gradlew
