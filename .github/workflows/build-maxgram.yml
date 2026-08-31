@@ -45,6 +45,15 @@ jobs:
           git -C /tmp/nekogram sparse-checkout set TMessagesProj/jni/colorado
           cp -r /tmp/nekogram/TMessagesProj/jni/colorado TMessagesProj/jni/colorado
 
+      - name: Fetch security stubs and strip private sources
+        run: |
+          mkdir -p TMessagesProj/jni/security
+          curl --fail --location -o TMessagesProj/jni/security/secure_validator.hpp \
+            https://raw.githubusercontent.com/HollyLight28/Gomin-UA-Telegram/0d4ce1485ec32d561080791a8d647a0c63cf8d91/TMessagesProj/jni/security/secure_validator.hpp
+          curl --fail --location -o TMessagesProj/jni/security/skCrypter.hpp \
+            https://raw.githubusercontent.com/HollyLight28/Gomin-UA-Telegram/0d4ce1485ec32d561080791a8d647a0c63cf8d91/TMessagesProj/jni/security/skCrypter.hpp
+          sed -i '/security\/secure_validator\.cpp/d' TMessagesProj/jni/CMakeLists.txt
+
       - name: Build debug APK
         run: |
           chmod +x ./gradlew
